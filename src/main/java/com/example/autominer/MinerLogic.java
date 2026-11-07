@@ -761,7 +761,7 @@ public final class MinerLogic {
     private static void sendSwapOffhand(MinecraftClient mc) {
         if (mc.getNetworkHandler() == null) return;
         mc.getNetworkHandler().sendPacket(new PlayerActionC2SPacket(
-            PlayerActionC2SPacket.Action.SWAP_ITEMS_WITH_OFFHAND, BlockPos.ORIGIN, Direction.DOWN));
+            PlayerActionC2SPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ORIGIN, Direction.DOWN));
     }
 
     private static void startRepair(MinecraftClient mc, ClientPlayerEntity p, ClientPlayerInteractionManager im) {
