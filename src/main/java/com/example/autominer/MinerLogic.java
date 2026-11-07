@@ -954,7 +954,7 @@ public final class MinerLogic {
             double front = off.x * face.getOffsetX() + off.y * face.getOffsetY() + off.z * face.getOffsetZ();
             if (front < 0.5) continue;
 
-            aim(p, hitVec);
+            aimExact(p, hitVec);          // PHAI quay mat (yaw) lai nhin vao mat block, ke ca khi o rat gan mep
             if (!placeAimed) {            // quay dau truoc, doi server nhan huong nhin roi moi dat
                 placeAimed = true;
                 placeCd = 2;
@@ -1068,6 +1068,17 @@ public final class MinerLogic {
     }
 
     // ===== Xoay dau =====
+    /** Nhin dung vao diem v: luon quay yaw (khong bo qua khi o gan), dung cho viec dat block. */
+    private static void aimExact(ClientPlayerEntity p, Vec3d v) {
+        Vec3d e = p.getEyePos();
+        double dx = v.x - e.x, dy = v.y - e.y, dz = v.z - e.z;
+        double hd = Math.sqrt(dx * dx + dz * dz);
+        if (hd > 0.01) {
+            p.setYaw((float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0));
+        }
+        p.setPitch((float) -Math.toDegrees(Math.atan2(dy, hd)));
+    }
+
     private static void aim(ClientPlayerEntity p, Vec3d v) {
         Vec3d e = p.getEyePos();
         double dx = v.x - e.x, dy = v.y - e.y, dz = v.z - e.z;
