@@ -64,7 +64,7 @@ public final class MinerLogic {
     // ===== Thoat ho (roi xuong thap hon tang dang dao) =====
     private static boolean escaping = false;
     private static Direction escDir = Direction.EAST;
-    private static int escTries = 0, escSlot = -1, escAir = 0;
+    private static int escTries = 0, escSlot = -1, escAir = 0, escCooldown = 0;
 
     private static BlockPos currentTarget = null;
     private static int mineTicks = 0;
@@ -105,6 +105,7 @@ public final class MinerLogic {
         stillTicks = 0;
         eating = false;
         escaping = false;
+        escCooldown = 0;
         lastPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         enabled = true;
         AutoMinerClient.msg("Da BAT: " + (straight ? "ham thang 3x3 (dai " + STRAIGHT_LEN + ")"
@@ -195,6 +196,7 @@ public final class MinerLogic {
 
         if (fixCooldown > 0) fixCooldown--;
         if (eatCooldown > 0) eatCooldown--;
+        if (escCooldown > 0) escCooldown--;
 
         // 1. An
         if (!autoEat && eating) stopEating(mc);
@@ -224,8 +226,10 @@ public final class MinerLogic {
             if (sh.isDamageable() && sh.getMaxDamage() - sh.getDamage() <= 2) shovelSlot = -1;
         }
 
-        // 3. Roi xuong ho (thap hon tang dang dao) -> doi cup thuong, dao bac thang len
-        if (!escaping && !descending && p.isOnGround() && p.getBlockPos().getY() < groupBottom) {
+        // 3. Roi xuong ho SAU (>= 2 block thap hon tang dang dao) -> doi cup thuong, dao bac thang len.
+        //    Ho nong 1 block thi bot tu nhay len khi di chuyen, khong can thoat ho.
+        if (!escaping && escCooldown == 0 && !descending && p.isOnGround()
+            && p.getBlockPos().getY() <= groupBottom - 2) {
             startEscape(mc, p);
         }
 
@@ -307,58 +311,45 @@ public final class MinerLogic {
             }
         }
 
-        // block trong tam voi cua hang hien tai: quet tung lat cat theo huong laneDir,
-        // trong 1 lat: tang tren truoc, roi gan truoc
-        Vec3d eye = p.getEyePos();
-        BlockPos cand = null;
-        int ck = 0;
-        double cd = 0;
-        for (BlockPos b : rem) {
-            if (laneOf(b) != curLane) continue;
-            double d = eye.squaredDistanceTo(Vec3d.ofCenter(b));
-            if (d > REACH_SQ) continue;
-            int k = alongKey(b);
-            if (cand == null || k < ck
-                || (k == ck && (b.getY() > cand.getY() || (b.getY() == cand.getY() && d < cd)))) {
-                cand = b;
-                ck = k;
-                cd = d;
-            }
+        // Cup 3x3: moi nhat dao 1 block GIUA cua lat cat 3x3 (vuong goc huong di) se vo ca 9 o.
+        // -> dao tung lat cat mot, lat GAN NHAT phia truoc theo huong quet, khong nhay lung tung.
+        int pc = alongX ? p.getBlockPos().getX() : p.getBlockPos().getZ();
+        int sliceA = nextSlice(pc);
+        if (sliceA == Integer.MIN_VALUE) {      // het phia truoc -> quay lai quet phan con lai
+            laneDir = -laneDir;
+            sliceA = nextSlice(pc);
+            if (sliceA == Integer.MIN_VALUE) return;
         }
-        if (cand != null) {
+        BlockPos target = sliceTarget(w, sliceA);
+        if (target != null && p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(target)) <= REACH_SQ) {
             stillTicks = 0;
             releaseMove(mc);
-            currentTarget = cand;
+            currentTarget = target;
             mineTicks = 0;
-            mineBlock(mc, p, w, im, cand);
+            mineBlock(mc, p, w, im, target);
             return;
         }
 
-        // khong co gi trong tam -> di chuyen
+        // chua toi tam -> di toi lat cat do (chi di tren cho da dao xong)
         im.cancelBlockBreaking();
         if (!botMove) return;
 
-        // di toi lat cat tiep theo cua hang (dau hang theo huong quet), khong phai block gan nhat
-        BlockPos near = null;
-        int nk = Integer.MAX_VALUE;
-        for (BlockPos b : rem) {
-            if (laneOf(b) != curLane) continue;
-            int k = alongKey(b);
-            if (k < nk) {
-                nk = k;
-                near = b;
-            }
-        }
-        if (near == null) return;
         double lc = laneCenter(curLane);
-        double tx = alongX ? near.getX() + 0.5 : lc;
-        double tz = alongX ? lc : near.getZ() + 0.5;
+        double tx = alongX ? sliceA + 0.5 : lc;
+        double tz = alongX ? lc : sliceA + 0.5;
+        if (guardHole(mc, p, w, im, tx, tz)) return;
         walkTo(mc, p, tx, tz);
+        BlockPos near = target;
 
         Vec3d pos = new Vec3d(p.getX(), p.getY(), p.getZ());
         if (pos.squaredDistanceTo(lastPos) < 0.0004) stillTicks++;
         else stillTicks = 0;
         lastPos = pos;
+        // ket trong ho 1 block (khong tu nhay ra duoc) -> thoat ho bang cup thuong
+        if (stillTicks >= 40 && escCooldown == 0 && p.getBlockPos().getY() < groupBottom) {
+            startEscape(mc, p);
+            return;
+        }
         if (stillTicks == 100) {
             skip.add(near);
             rem.remove(near);
@@ -447,7 +438,6 @@ public final class MinerLogic {
         currentTarget = null;
         mineTicks = 0;
         stillTicks = 0;
-        curLane = -1;
         releaseMove(mc);
         if (mc.interactionManager != null) mc.interactionManager.cancelBlockBreaking();
         escSlot = resolveNormalPick(p);
@@ -468,7 +458,7 @@ public final class MinerLogic {
         currentTarget = null;
         mineTicks = 0;
         stillTicks = 0;
-        curLane = -1;
+        escCooldown = 60;   // 3 giay khong cho thoat ho lai ngay -> tranh lap
         rem.clear();
         scanCd = 0;
         if (pickSlot >= 0) p.getInventory().setSelectedSlot(pickSlot);
