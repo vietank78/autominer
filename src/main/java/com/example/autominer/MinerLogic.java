@@ -76,6 +76,7 @@ public final class MinerLogic {
     private static Vec3d lastPos = Vec3d.ZERO;
     private static int stillTicks = 0;
     private static int hudTick = 0;
+    private static int holeTicks = 0;
 
     private static boolean eating = false;
     private static int eatTicks = 0, eatCooldown = 0, fixCooldown = 0;
@@ -103,6 +104,7 @@ public final class MinerLogic {
         rem.clear();
         scanCd = 0;
         stillTicks = 0;
+        holeTicks = 0;
         eating = false;
         escaping = false;
         escCooldown = 0;
@@ -254,7 +256,7 @@ public final class MinerLogic {
             if (mineable(w, currentTarget)
                 && p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(currentTarget)) <= REACH_SQ) {
                 releaseMove(mc);
-                mineBlock(mc, p, w, im, currentTarget);
+                mineBlock(mc, p, w, im, currentTarget, true);
                 return;
             }
             currentTarget = null;
@@ -311,22 +313,24 @@ public final class MinerLogic {
             }
         }
 
-        // Cup 3x3: moi nhat dao 1 block GIUA cua lat cat 3x3 (vuong goc huong di) se vo ca 9 o.
-        // -> dao tung lat cat mot, lat GAN NHAT phia truoc theo huong quet, khong nhay lung tung.
-        int pc = alongX ? p.getBlockPos().getX() : p.getBlockPos().getZ();
-        int sliceA = nextSlice(pc);
-        if (sliceA == Integer.MIN_VALUE) {      // het phia truoc -> quay lai quet phan con lai
-            laneDir = -laneDir;
-            sliceA = nextSlice(pc);
-            if (sliceA == Integer.MIN_VALUE) return;
+        // Cup 3x3: moi nhat dao 1 block GIUA cua lat cat 3x3 se vo ca 9 o.
+        // -> dao tung lat cat mot theo huong quet; LUON dung mat ngang (khong bao gio mat tren/duoi)
+        //    va chi dao hang giua (centerY) de 3x3 khong an vao san.
+        int sliceA = nextSlice();
+        if (sliceA == Integer.MIN_VALUE) return;
+        BlockPos target = sliceTarget(sliceA);
+        if (target != null && !canMineSafely(w, p, target)) {
+            // block lech hang giua ma khong co cup thuong/xeng -> bo qua de khong pha san
+            skip.add(target);
+            rem.remove(target);
+            return;
         }
-        BlockPos target = sliceTarget(w, sliceA);
         if (target != null && p.getEyePos().squaredDistanceTo(Vec3d.ofCenter(target)) <= REACH_SQ) {
             stillTicks = 0;
             releaseMove(mc);
             currentTarget = target;
             mineTicks = 0;
-            mineBlock(mc, p, w, im, target);
+            mineBlock(mc, p, w, im, target, true);
             return;
         }
 
@@ -350,7 +354,7 @@ public final class MinerLogic {
             startEscape(mc, p);
             return;
         }
-        if (stillTicks == 100) {
+        if (stillTicks == 100 && near != null) {
             skip.add(near);
             rem.remove(near);
         }
@@ -393,6 +397,12 @@ public final class MinerLogic {
     // ===== Dao 1 block =====
     private static void mineBlock(MinecraftClient mc, ClientPlayerEntity p, ClientWorld w,
                                   ClientPlayerInteractionManager im, BlockPos target) {
+        mineBlock(mc, p, w, im, target, false);
+    }
+
+    /** safe=true: dao theo lat cat -> mat dap LUON la mat ngang, nhin ngang; block lech hang giua dung cup thuong. */
+    private static void mineBlock(MinecraftClient mc, ClientPlayerEntity p, ClientWorld w,
+                                  ClientPlayerInteractionManager im, BlockPos target, boolean safe) {
         BlockState s = w.getBlockState(target);
 
         if (lavaSafety) {
@@ -409,14 +419,28 @@ public final class MinerLogic {
 
         // Cat / soi / dat -> xeng, con lai -> cuc
         int pk = (escaping && escSlot >= 0) ? escSlot : pickSlot;
+        if (safe && target.getY() != centerY()) {
+            int np = resolveNormalPick(p);
+            if (np >= 0) pk = np;
+        }
         int slot = (s.isIn(BlockTags.SHOVEL_MINEABLE) && shovelSlot >= 0) ? shovelSlot : pk;
         PlayerInventory inv = p.getInventory();
         if (inv.getSelectedSlot() != slot) inv.setSelectedSlot(slot);
 
         Vec3d eye = p.getEyePos();
         Vec3d c = Vec3d.ofCenter(target);
-        aim(p, c);
-        Direction face = Direction.getFacing(eye.x - c.x, eye.y - c.y, eye.z - c.z);
+        Direction face;
+        if (safe) {
+            double fx = eye.x - c.x, fz = eye.z - c.z;
+            face = Math.abs(fx) >= Math.abs(fz)
+                ? (fx >= 0 ? Direction.EAST : Direction.WEST)
+                : (fz >= 0 ? Direction.SOUTH : Direction.NORTH);
+            aim(p, c.add(face.getOffsetX() * 0.45, 0, face.getOffsetZ() * 0.45));
+            p.setPitch(Math.max(-12f, Math.min(12f, p.getPitch())));   // nhin ngang, khong cui/ngua
+        } else {
+            aim(p, c);
+            face = Direction.getFacing(eye.x - c.x, eye.y - c.y, eye.z - c.z);
+        }
         im.updateBlockBreakingProgress(target, face);
         p.swingHand(Hand.MAIN_HAND);
 
@@ -639,6 +663,72 @@ public final class MinerLogic {
     private static double laneCenter(int i) {
         int width = Math.min(3, (latMax - latMin + 1) - 3 * i);
         return latMin + 3 * i + (width - 1) / 2.0 + 0.5;
+    }
+
+    // ===== Lat cat / hang giua =====
+    /** Hang Y giua cua nhom tang: cup 3x3 dao o day thi chi an tang duoi chan..dau, khong an san. */
+    private static int centerY() {
+        return groupBottom + 1;
+    }
+
+    /** Lat cat (toa do doc huong di) gan nhat phia truoc theo huong quet trong hang hien tai. */
+    private static int nextSlice() {
+        int best = Integer.MIN_VALUE;
+        long bestKey = Long.MAX_VALUE;
+        for (BlockPos b : rem) {
+            if (laneOf(b) != curLane) continue;
+            int a = alongX ? b.getX() : b.getZ();
+            long key = (long) a * laneDir;
+            if (key < bestKey) {
+                bestKey = key;
+                best = a;
+            }
+        }
+        return best;
+    }
+
+    /** Block cua lat cat a: uu tien hang giua (centerY) va nam sat tam hang nhat. */
+    private static BlockPos sliceTarget(int a) {
+        BlockPos best = null;
+        double bs = 1e18;
+        double lc = laneCenter(curLane);
+        for (BlockPos b : rem) {
+            if (laneOf(b) != curLane) continue;
+            if ((alongX ? b.getX() : b.getZ()) != a) continue;
+            double lat = (alongX ? b.getZ() : b.getX()) + 0.5;
+            double score = Math.abs(lat - lc) + (b.getY() == centerY() ? 0 : 10);
+            if (score < bs) {
+                bs = score;
+                best = b;
+            }
+        }
+        return best;
+    }
+
+    /** Block lech hang giua chi duoc dao khi co cup thuong (hoac xeng cho dat/cat), neu khong se bi 3x3 an san. */
+    private static boolean canMineSafely(ClientWorld w, ClientPlayerEntity p, BlockPos b) {
+        if (b.getY() == centerY()) return true;
+        if (resolveNormalPick(p) >= 0) return true;
+        return shovelSlot >= 0 && w.getBlockState(b).isIn(BlockTags.SHOVEL_MINEABLE);
+    }
+
+    /** Truoc mat la o trong ma khong co san (ho/lava) -> lap san, neu khong lap duoc thi dung lai, khong buoc xuong. */
+    private static boolean guardHole(MinecraftClient mc, ClientPlayerEntity p, ClientWorld w,
+                                     ClientPlayerInteractionManager im, double tx, double tz) {
+        double dx = tx - p.getX(), dz = tz - p.getZ();
+        Direction d = Math.abs(dx) >= Math.abs(dz)
+            ? (dx >= 0 ? Direction.EAST : Direction.WEST)
+            : (dz >= 0 ? Direction.SOUTH : Direction.NORTH);
+        BlockPos ahead = p.getBlockPos().offset(d);
+        if (!w.getBlockState(ahead).isAir()) { holeTicks = 0; return false; }   // dang co block -> bot se dao, khong di
+        BlockPos floor = ahead.down();
+        boolean hole = w.getBlockState(floor).isAir() || w.getFluidState(floor).isIn(FluidTags.LAVA);
+        if (!hole) { holeTicks = 0; return false; }
+        releaseMove(mc);
+        im.cancelBlockBreaking();
+        if (autoScaffold && placeAt(p, w, im, floor)) return true;
+        if (++holeTicks > 60) disable(mc, "Truoc mat la ho va khong co block de lap! Da dung.");
+        return true;
     }
 
     private static void hud(ClientPlayerEntity p) {
