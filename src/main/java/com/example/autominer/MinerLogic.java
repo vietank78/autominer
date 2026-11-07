@@ -10,6 +10,7 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.LoreComponent;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
@@ -41,6 +42,7 @@ public final class MinerLogic {
     public static boolean lavaSafety = true;
     public static boolean botMove = true;      // bot tu di chuyen
     public static int layerHeight = 3;         // so tang dao cung luc (1..3)
+    public static int normalPickSlot = -1;     // o hotbar (0..8) cua cup thuong; -1 = tu nhan dang cup 3x3 theo ten/lore
     public static BlockPos pos1 = null;
     public static BlockPos pos2 = null;
 
@@ -57,6 +59,12 @@ public final class MinerLogic {
     private static int groupBottom;
     private static boolean descending;
     private static int curLane = -1;
+    private static int laneDir = 1;   // huong quet doc theo hang: +1 hoac -1
+
+    // ===== Thoat ho (roi xuong thap hon tang dang dao) =====
+    private static boolean escaping = false;
+    private static Direction escDir = Direction.EAST;
+    private static int escTries = 0, escSlot = -1, escAir = 0;
 
     private static BlockPos currentTarget = null;
     private static int mineTicks = 0;
@@ -96,6 +104,7 @@ public final class MinerLogic {
         scanCd = 0;
         stillTicks = 0;
         eating = false;
+        escaping = false;
         lastPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         enabled = true;
         AutoMinerClient.msg("Da BAT: " + (straight ? "ham thang 3x3 (dai " + STRAIGHT_LEN + ")"
@@ -160,6 +169,7 @@ public final class MinerLogic {
 
     private static void disable(MinecraftClient mc, String reason) {
         enabled = false;
+        escaping = false;
         if (eating) stopEating(mc);
         releaseMove(mc);
         if (mc.interactionManager != null) mc.interactionManager.cancelBlockBreaking();
@@ -192,7 +202,7 @@ public final class MinerLogic {
 
         // 2. Cong cu + do ben
         PlayerInventory inv = p.getInventory();
-        pickSlot = resolveTool(p, ItemTags.PICKAXES, pickSlot);
+        pickSlot = resolveMainPick(p, pickSlot);
         if (pickSlot < 0) {
             disable(mc, "Het cuc! Da dung.");
             return;
@@ -214,16 +224,22 @@ public final class MinerLogic {
             if (sh.isDamageable() && sh.getMaxDamage() - sh.getDamage() <= 2) shovelSlot = -1;
         }
 
-        // 3. Scaffold (chi khi dang dao ngang)
+        // 3. Roi xuong ho (thap hon tang dang dao) -> doi cup thuong, dao bac thang len
+        if (!escaping && !descending && p.isOnGround() && p.getBlockPos().getY() < groupBottom) {
+            startEscape(mc, p);
+        }
+
+        // 4. Scaffold (chi khi dang dao ngang)
         BlockPos below = p.getBlockPos().down();
-        if (autoScaffold && !descending && !p.getAbilities().flying && w.getBlockState(below).isAir()) {
+        if (autoScaffold && !descending && !escaping && !p.getAbilities().flying && w.getBlockState(below).isAir()) {
             im.cancelBlockBreaking();
             if (placeAt(p, w, im, below)) return;
         }
 
         hud(p);
 
-        if (descending) doDescend(mc, p, w, im);
+        if (escaping) doEscape(mc, p, w, im);
+        else if (descending) doDescend(mc, p, w, im);
         else doWork(mc, p, w, im);
     }
 
@@ -285,18 +301,27 @@ public final class MinerLogic {
                 }
             }
             curLane = best;
+            if (curLane >= 0) {
+                // bat dau tu dau hang gan nguoi nhat -> hang ke tiep tu dong quet nguoc lai (zigzag)
+                laneDir = chooseLaneDir(curLane, alongX ? p.getX() : p.getZ());
+            }
         }
 
-        // block trong tam voi cua hang hien tai: tang tren truoc, gan truoc
+        // block trong tam voi cua hang hien tai: quet tung lat cat theo huong laneDir,
+        // trong 1 lat: tang tren truoc, roi gan truoc
         Vec3d eye = p.getEyePos();
         BlockPos cand = null;
+        int ck = 0;
         double cd = 0;
         for (BlockPos b : rem) {
             if (laneOf(b) != curLane) continue;
             double d = eye.squaredDistanceTo(Vec3d.ofCenter(b));
             if (d > REACH_SQ) continue;
-            if (cand == null || b.getY() > cand.getY() || (b.getY() == cand.getY() && d < cd)) {
+            int k = alongKey(b);
+            if (cand == null || k < ck
+                || (k == ck && (b.getY() > cand.getY() || (b.getY() == cand.getY() && d < cd)))) {
                 cand = b;
+                ck = k;
                 cd = d;
             }
         }
@@ -313,14 +338,14 @@ public final class MinerLogic {
         im.cancelBlockBreaking();
         if (!botMove) return;
 
-        double pAlong = alongX ? p.getX() : p.getZ();
+        // di toi lat cat tiep theo cua hang (dau hang theo huong quet), khong phai block gan nhat
         BlockPos near = null;
-        double nd = 1e18;
+        int nk = Integer.MAX_VALUE;
         for (BlockPos b : rem) {
             if (laneOf(b) != curLane) continue;
-            double d = Math.abs((alongX ? b.getX() : b.getZ()) + 0.5 - pAlong);
-            if (d < nd) {
-                nd = d;
+            int k = alongKey(b);
+            if (k < nk) {
+                nk = k;
                 near = b;
             }
         }
@@ -392,7 +417,8 @@ public final class MinerLogic {
         }
 
         // Cat / soi / dat -> xeng, con lai -> cuc
-        int slot = (s.isIn(BlockTags.SHOVEL_MINEABLE) && shovelSlot >= 0) ? shovelSlot : pickSlot;
+        int pk = (escaping && escSlot >= 0) ? escSlot : pickSlot;
+        int slot = (s.isIn(BlockTags.SHOVEL_MINEABLE) && shovelSlot >= 0) ? shovelSlot : pk;
         PlayerInventory inv = p.getInventory();
         if (inv.getSelectedSlot() != slot) inv.setSelectedSlot(slot);
 
@@ -411,6 +437,170 @@ public final class MinerLogic {
             im.cancelBlockBreaking();
             AutoMinerClient.msg("Bo qua 1 block khong dao duoc.");
         }
+    }
+
+    // ===== Roi xuong ho: doi cup thuong, dao bac thang cheo len =====
+    private static void startEscape(MinecraftClient mc, ClientPlayerEntity p) {
+        escaping = true;
+        escTries = 0;
+        escAir = 0;
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        curLane = -1;
+        releaseMove(mc);
+        if (mc.interactionManager != null) mc.interactionManager.cancelBlockBreaking();
+        escSlot = resolveNormalPick(p);
+        double cx = (minX + maxX + 1) / 2.0, cz = (minZ + maxZ + 1) / 2.0;
+        double dx = cx - p.getX(), dz = cz - p.getZ();
+        escDir = Math.abs(dx) >= Math.abs(dz)
+            ? (dx >= 0 ? Direction.EAST : Direction.WEST)
+            : (dz >= 0 ? Direction.SOUTH : Direction.NORTH);
+        AutoMinerClient.msg(escSlot >= 0
+            ? "Roi xuong ho! Doi sang cup thuong de dao bac thang len."
+            : "Roi xuong ho! Chua biet cup thuong nao (cam cup thuong roi go /am normal), tam dung cup hien tai.");
+    }
+
+    private static void endEscape(MinecraftClient mc, ClientPlayerEntity p, ClientPlayerInteractionManager im) {
+        escaping = false;
+        releaseMove(mc);
+        im.cancelBlockBreaking();
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        curLane = -1;
+        rem.clear();
+        scanCd = 0;
+        if (pickSlot >= 0) p.getInventory().setSelectedSlot(pickSlot);
+        AutoMinerClient.msg("Da len lai tang dao, tiep tuc.");
+    }
+
+    private static void rotateEscape(MinecraftClient mc) {
+        releaseMove(mc);
+        escDir = escDir.rotateYClockwise();
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        if (++escTries > 12) disable(mc, "Khong tim duoc duong len, da dung.");
+    }
+
+    private static void doEscape(MinecraftClient mc, ClientPlayerEntity p, ClientWorld w, ClientPlayerInteractionManager im) {
+        if (!p.isOnGround()) {
+            if (++escAir < 40) return;
+        } else {
+            escAir = 0;
+        }
+        BlockPos feet = p.getBlockPos();
+        if (feet.getY() >= groupBottom) {
+            endEscape(mc, p, im);
+            return;
+        }
+
+        // bac thang cheo: can thong 3 o = tren dau, o buoc len, tren o buoc len
+        BlockPos step = feet.offset(escDir).up();
+        BlockPos[] need = {feet.up(2), step.up(), step};
+        for (BlockPos c : need) {
+            BlockState s = w.getBlockState(c);
+            if (s.isAir()) continue;
+            if (w.getFluidState(c).isIn(FluidTags.LAVA)) {
+                rotateEscape(mc);
+                return;
+            }
+            if (!w.getFluidState(c).isEmpty()) continue;
+            if (s.getHardness(w, c) < 0 || skip.contains(c)) {
+                rotateEscape(mc);
+                return;
+            }
+            releaseMove(mc);
+            if (currentTarget == null || !currentTarget.equals(c)) {
+                currentTarget = c;
+                mineTicks = 0;
+            }
+            mineBlock(mc, p, w, im, c);
+            return;
+        }
+
+        // da thong -> nhay len bac
+        im.cancelBlockBreaking();
+        currentTarget = null;
+        walkTo(mc, p, step.getX() + 0.5, step.getZ() + 0.5);
+        mc.options.jumpKey.setPressed(p.isOnGround());
+        Vec3d pos = new Vec3d(p.getX(), p.getY(), p.getZ());
+        if (pos.squaredDistanceTo(lastPos) < 0.0004) stillTicks++;
+        else stillTicks = 0;
+        lastPos = pos;
+        if (stillTicks > 30) rotateEscape(mc);
+    }
+
+    // ===== Nhan dang cup 3x3 / cup thuong =====
+    private static boolean mentions3x3(String str) {
+        String n = str.toLowerCase().replace(" ", "");
+        return n.contains("3x3") || n.contains("3*3") || n.contains("3×3");
+    }
+
+    private static boolean isAreaPick(ItemStack s) {
+        if (!s.isIn(ItemTags.PICKAXES)) return false;
+        if (mentions3x3(s.getName().getString())) return true;
+        LoreComponent lore = s.get(DataComponentTypes.LORE);
+        if (lore != null) {
+            for (Text line : lore.lines()) {
+                if (mentions3x3(line.getString())) return true;
+            }
+        }
+        return false;
+    }
+
+    /** O cup thuong: do nguoi dung dat (/am normal) hoac tu nhan dang (co cup 3x3 + cup khong ghi 3x3). -1 neu khong ro. */
+    private static int resolveNormalPick(ClientPlayerEntity p) {
+        PlayerInventory inv = p.getInventory();
+        if (normalPickSlot >= 0 && normalPickSlot < 9 && inv.getStack(normalPickSlot).isIn(ItemTags.PICKAXES)) {
+            return normalPickSlot;
+        }
+        boolean hasArea = false;
+        int plain = -1;
+        float bp = -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack s = inv.getStack(i);
+            if (!s.isIn(ItemTags.PICKAXES)) continue;
+            if (isAreaPick(s)) {
+                hasArea = true;
+            } else {
+                float pp = durabilityPercent(s);
+                if (pp > bp) {
+                    bp = pp;
+                    plain = i;
+                }
+            }
+        }
+        return hasArea ? plain : -1;
+    }
+
+    /** Cup dung de dao chinh: loai tru cup thuong (neu chi co 1 cup thuong thi van dung no). */
+    private static int findMainPick(ClientPlayerEntity p, int exclude) {
+        PlayerInventory inv = p.getInventory();
+        int best = -1;
+        float bp = -1;
+        for (int i = 0; i < 9; i++) {
+            if (i == exclude) continue;
+            ItemStack s = inv.getStack(i);
+            if (!s.isIn(ItemTags.PICKAXES)) continue;
+            float pp = durabilityPercent(s);
+            if (pp > bp) {
+                bp = pp;
+                best = i;
+            }
+        }
+        if (best < 0 && exclude >= 0) best = exclude;
+        return best;
+    }
+
+    private static int resolveMainPick(ClientPlayerEntity p, int cur) {
+        int ex = resolveNormalPick(p);
+        if (cur >= 0 && cur != ex) {
+            ItemStack s = p.getInventory().getStack(cur);
+            if (s.isIn(ItemTags.PICKAXES) && durabilityPercent(s) >= DURABILITY_THRESHOLD) return cur;
+        }
+        return findMainPick(p, ex);
     }
 
     // ===== Tien ich vung / hang =====
@@ -438,6 +628,24 @@ public final class MinerLogic {
         return Math.min(laneCount - 1, (lat - latMin) / 3);
     }
 
+    /** Thu tu quet doc hang: so nho hon = dao truoc. */
+    private static int alongKey(BlockPos b) {
+        return (alongX ? b.getX() : b.getZ()) * laneDir;
+    }
+
+    /** Chon huong quet: bat dau tu dau hang gan nguoi choi nhat. */
+    private static int chooseLaneDir(int lane, double pAlong) {
+        int lo = Integer.MAX_VALUE, hi = Integer.MIN_VALUE;
+        for (BlockPos b : rem) {
+            if (laneOf(b) != lane) continue;
+            int a = alongX ? b.getX() : b.getZ();
+            if (a < lo) lo = a;
+            if (a > hi) hi = a;
+        }
+        if (lo > hi) return 1;
+        return Math.abs(pAlong - (lo + 0.5)) <= Math.abs(pAlong - (hi + 0.5)) ? 1 : -1;
+    }
+
     private static double laneCenter(int i) {
         int width = Math.min(3, (latMax - latMin + 1) - 3 * i);
         return latMin + 3 * i + (width - 1) / 2.0 + 0.5;
@@ -450,7 +658,7 @@ public final class MinerLogic {
         p.sendMessage(Text.literal("Tang " + idx + "/" + total
             + " | Hang " + (curLane + 1) + "/" + laneCount
             + " | Con " + rem.size() + " block"
-            + (descending ? " | dang xuong tang" : "")), true);
+            + (escaping ? " | dang thoat ho" : descending ? " | dang xuong tang" : "")), true);
     }
 
     // ===== Di chuyen =====

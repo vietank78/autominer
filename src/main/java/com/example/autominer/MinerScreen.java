@@ -30,7 +30,7 @@ public class MinerScreen extends Screen {
         int cw = 150;
         int x1 = this.width / 2 - 155;
         int x2 = this.width / 2 + 5;
-        int y = this.height / 2 - 84;
+        int y = this.height / 2 - 96;
         int gap = 24;
 
         addDrawableChild(ButtonWidget.builder(onOff("Auto Mine", MinerLogic.enabled), b -> {
@@ -68,6 +68,10 @@ public class MinerScreen extends Screen {
             MinerLogic.pos1 = null;
             MinerLogic.pos2 = null;
         }).dimensions(x1, y, 310, 20).build());
+        y += gap;
+
+        addDrawableChild(ButtonWidget.builder(Text.literal("Đặt cúp thường = ô đang cầm (dùng khi rơi hố)"), b ->
+            AutoMinerClient.setNormalPick()).dimensions(x1, y, 310, 20).build());
         y += gap + 4;
 
         addDrawableChild(ButtonWidget.builder(Text.literal("Đóng"), b -> close())
@@ -77,10 +81,10 @@ public class MinerScreen extends Screen {
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
         super.render(ctx, mouseX, mouseY, delta);
-        ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, this.height / 2 - 112, 0xFFFFFFFF);
+        ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, this.height / 2 - 124, 0xFFFFFFFF);
         String mode = (MinerLogic.pos1 != null && MinerLogic.pos2 != null)
             ? "Chế độ: vùng chọn (đào từng tầng)" : "Chế độ: hầm thẳng 3x3";
-        ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(mode), this.width / 2, this.height / 2 - 100, 0xFFAAAAAA);
+        ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(mode), this.width / 2, this.height / 2 - 112, 0xFFAAAAAA);
     }
 
     @Override

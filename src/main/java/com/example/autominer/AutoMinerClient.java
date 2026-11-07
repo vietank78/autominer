@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 import net.minecraft.client.MinecraftClient;
@@ -87,16 +88,40 @@ public class AutoMinerClient implements ClientModInitializer {
                         msg("Dao moi dot " + MinerLogic.layerHeight + " tang.");
                         return 1;
                     })))
+                .then(ClientCommandManager.literal("normal")
+                    .executes(ctx -> {
+                        setNormalPick();
+                        return 1;
+                    })
+                    .then(ClientCommandManager.literal("clear").executes(ctx -> {
+                        MinerLogic.normalPickSlot = -1;
+                        msg("Da xoa cai dat cup thuong (tu nhan dang cup 3x3 theo ten).");
+                        return 1;
+                    })))
                 .then(ClientCommandManager.literal("status").executes(ctx -> {
                     msg("Bat: " + MinerLogic.enabled
                         + " | pos1: " + MinerLogic.pos1
                         + " | pos2: " + MinerLogic.pos2
+                        + " | cup thuong: " + (MinerLogic.normalPickSlot >= 0 ? "o " + (MinerLogic.normalPickSlot + 1) : "tu nhan dang")
                         + " | /fix: " + MinerLogic.useFixCommand
                         + " | bot: " + MinerLogic.botMove
                         + " | tang: " + MinerLogic.layerHeight);
                     return 1;
                 }))
             ));
+    }
+
+    /** Dat cup thuong (khong phai 3x3) = o hotbar dang cam. Dung de doi cup khi roi xuong ho. */
+    static void setNormalPick() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null) return;
+        int slot = mc.player.getInventory().getSelectedSlot();
+        if (!mc.player.getInventory().getStack(slot).isIn(ItemTags.PICKAXES)) {
+            msg("Hay cam CUP THUONG (khong phai 3x3) tren tay roi bam lai.");
+            return;
+        }
+        MinerLogic.normalPickSlot = slot;
+        msg("Da dat cup thuong = o " + (slot + 1) + ". Khi roi xuong ho se doi sang cup nay.");
     }
 
     static BlockPos lookPos() {
