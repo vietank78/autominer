@@ -54,6 +54,10 @@ public class MinerScreen extends Screen {
         }).dimensions(x2, y, cw, 20).build());
         y += gap;
 
+        toggleButton(x1, y, cw, "Mua XP /shop", () -> MinerLogic.autoBuyXp, v -> MinerLogic.autoBuyXp = v);
+        toggleButton(x2, y, cw, "Vứt đồ thừa", () -> MinerLogic.dropJunk, v -> MinerLogic.dropJunk = v);
+        y += gap;
+
         addDrawableChild(ButtonWidget.builder(Text.literal("Đặt Pos1"), b -> {
             MinerLogic.pos1 = AutoMinerClient.lookPos();
             AutoMinerClient.msg("pos1 = " + MinerLogic.pos1.toShortString());

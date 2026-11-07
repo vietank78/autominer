@@ -6,6 +6,8 @@ import net.minecraft.block.Blocks;
 import net.minecraft.block.FallingBlock;
 import net.minecraft.block.FluidBlock;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.world.ClientWorld;
@@ -18,6 +20,8 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.registry.tag.TagKey;
@@ -38,6 +42,9 @@ public final class MinerLogic {
     // ===== Cai dat =====
     public static boolean enabled = false;
     public static boolean useXpBottle = true;     // tu nem binh XP de Mending sua cup
+    public static boolean autoBuyXp = true;       // het binh XP -> /shop mua
+    public static boolean dropJunk = true;        // truoc khi mua: vut do thua (chi giu cup, xeng, XP, do an, totem, block lap ho)
+    public static int xpBuyStacks = 4;            // moi lan het binh: mua bao nhieu lan "dat thanh 64"
     public static boolean autoEat = true;
     public static boolean autoScaffold = true;
     public static boolean lavaSafety = true;
@@ -92,6 +99,16 @@ public final class MinerLogic {
     private static boolean repairing = false, repairSwapped = false, repairEnding = false, noXpWarned = false;
     private static int repairTicks = 0, repairWait = 0, repairSwapTries = 0, repairBackTries = 0, repairCooldown = 0;
 
+    // ===== Mua XP /shop + sap xep hotbar (theo anh: 0 cup 3x3, 1 cup thuong, 2 xeng, 3 do an, 4-7 binh XP, 8 block lap ho) =====
+    private static final int[] HOTBAR_LAYOUT = {0, 1, 2, 3, 4, 4, 4, 4, 5};
+    private static final int SH_IDLE = 0, SH_DROP = 1, SH_OPEN = 2, SH_MAIN = 3, SH_GEAR = 4, SH_ITEM = 5,
+        SH_CONFIRM = 6, SH_VERIFY = 7, SH_CLOSE = 8, SH_ARRANGE = 9;
+    private static int shopStage = SH_IDLE, shopWait = 0, shopTimeout = 0, shopRetry = 0, shopBought = 0;
+    private static int shopXpBefore = 0, shopSync = -1, shopDrops = 0, shopArrangeSteps = 0, shopCooldown = 0;
+    private static String shopTitle = "";
+    private static boolean repairResume = false;
+    private static int repairThrows = 0, repairDmgStart = 0;
+
     private MinerLogic() {}
 
     // ===== Bat / tat =====
@@ -118,6 +135,9 @@ public final class MinerLogic {
         holeTicks = 0;
         repairing = false;
         repairCooldown = 0;
+        repairResume = false;
+        shopStage = SH_IDLE;
+        shopCooldown = 0;
         noXpWarned = false;
         escCount = 0;
         escWindowStart = 0;
@@ -187,11 +207,14 @@ public final class MinerLogic {
     }
 
     private static void disable(MinecraftClient mc, String reason) {
-        if (repairing && repairSwapped && mc.player != null) {   // tra cup ve tay chinh
+        if (repairing && repairSwapped && mc.player != null
+            && mc.player.getOffHandStack().isIn(ItemTags.PICKAXES)) {   // tra cup ve tay chinh
             mc.player.getInventory().setSelectedSlot(pickSlot);
             sendSwapOffhand(mc);
         }
         repairing = false;
+        if (shopStage != SH_IDLE && mc.player != null && mc.currentScreen != null) mc.player.closeHandledScreen();
+        shopStage = SH_IDLE;
         enabled = false;
         escaping = false;
         if (eating) stopEating(mc);
@@ -219,6 +242,11 @@ public final class MinerLogic {
 
         if (repairCooldown > 0) repairCooldown--;
         if (placeCd > 0) placeCd--;
+        if (shopCooldown > 0) shopCooldown--;
+        if (shopStage != SH_IDLE) {      // dang mua XP / xep do
+            doShop(mc, p, im);
+            return;
+        }
         if (repairing) {            // dang nem binh XP: dung moi viec khac
             doRepair(mc, p, im);
             return;
@@ -238,10 +266,23 @@ public final class MinerLogic {
             return;
         }
         ItemStack pick = inv.getStack(pickSlot);
-        if (durabilityPercent(pick) < DURABILITY_THRESHOLD) {
-            if (useXpBottle && repairCooldown == 0 && findXpSlot(p) >= 0) {
-                startRepair(mc, p, im);
-                return;
+        if (repairResume && durabilityPercent(pick) >= REPAIR_TARGET) repairResume = false;
+        if (durabilityPercent(pick) < DURABILITY_THRESHOLD || repairResume) {
+            if (useXpBottle && repairCooldown == 0) {
+                if (findXpSlot(p) >= 0) {
+                    startRepair(mc, p, im);
+                    return;
+                }
+                if (shopCooldown == 0) {
+                    if (countXp(p) > 0) {          // binh XP dang nam trong tui -> xep len hotbar
+                        startShop(mc, p, im, false);
+                        return;
+                    }
+                    if (autoBuyXp) {               // het binh -> /shop mua
+                        startShop(mc, p, im, true);
+                        return;
+                    }
+                }
             }
             if (pick.isDamageable() && pick.getMaxDamage() - pick.getDamage() <= 2) {
                 disable(mc, "Cuc sap hong va het binh XP! Da dung.");
@@ -833,11 +874,17 @@ public final class MinerLogic {
         if (!repairSwapped && !repairEnding) {
             if (p.getOffHandStack().isIn(ItemTags.PICKAXES)) {
                 repairSwapped = true;
+                repairThrows = 0;
+                repairDmgStart = p.getOffHandStack().getDamage();
             } else if (repairSwapTries < 3) {
-                inv.setSelectedSlot(pickSlot);
+                if (inv.getSelectedSlot() != pickSlot) {      // doi server nhan o dang cam roi moi swap
+                    inv.setSelectedSlot(pickSlot);
+                    repairWait = 4;
+                    return;
+                }
                 sendSwapOffhand(mc);
                 repairSwapTries++;
-                repairWait = 6;
+                repairWait = 8;
                 return;
             } else {
                 repairing = false;
@@ -847,33 +894,37 @@ public final class MinerLogic {
             }
         }
 
-        // 2. Ket thuc: tra cup ve o hotbar cu
+        // 2. Ket thuc: tra cup ve tay chinh. Swap luon doi cho o DANG CAM <-> tay phu,
+        //    nen phai chon dung o (pickSlot) va doi server nhan truoc khi gui swap.
         if (repairEnding) {
-            if (!repairSwapped || inv.getStack(pickSlot).isIn(ItemTags.PICKAXES)) {
-                repairing = false;
-                repairSwapped = false;
-                repairCooldown = 40;
-                inv.setSelectedSlot(pickSlot);
-                AutoMinerClient.msg("Xong sua cup, tiep tuc dao.");
+            if (!repairSwapped || !p.getOffHandStack().isIn(ItemTags.PICKAXES)) {
+                finishRepair(p);
                 return;
             }
-            if (repairBackTries++ > 4) {
+            if (repairBackTries >= 4) {
                 disable(mc, "Khong tra duoc cup ve tay chinh, da dung.");
                 return;
             }
-            inv.setSelectedSlot(pickSlot);
+            if (inv.getSelectedSlot() != pickSlot) {
+                inv.setSelectedSlot(pickSlot);
+                repairWait = 4;
+                return;
+            }
             sendSwapOffhand(mc);
-            repairWait = 6;
+            repairBackTries++;
+            repairWait = 8;
             return;
         }
 
         // 3. Nem binh XP xuong chan cho toi khi cup day
         if (durabilityPercent(p.getOffHandStack()) >= REPAIR_TARGET) {
+            repairResume = false;
             repairEnding = true;
             return;
         }
         int xs = findXpSlot(p);
         if (xs < 0) {
+            repairResume = true;       // het binh -> mua/xep them roi sua tiep
             if (!noXpWarned) {
                 noXpWarned = true;
                 AutoMinerClient.msg("Het binh XP trong hotbar!");
@@ -881,15 +932,387 @@ public final class MinerLogic {
             repairEnding = true;
             return;
         }
+        noXpWarned = false;
         if (inv.getSelectedSlot() != xs) {
             inv.setSelectedSlot(xs);
-            repairWait = 2;
+            repairWait = 3;
             return;
         }
         p.setPitch(90f);
         if (repairTicks % 3 == 0) {
             im.interactItem(p, Hand.MAIN_HAND);
             p.swingHand(Hand.MAIN_HAND);
+            // Nem 15 binh ma cup khong hoi phuc -> khong co Mending: dung nem/mua de khoi ton tien
+            if (++repairThrows == 15 && p.getOffHandStack().getDamage() >= repairDmgStart) {
+                useXpBottle = false;
+                repairResume = false;
+                repairEnding = true;
+                AutoMinerClient.msg("Nem 15 binh ma cup khong duoc sua (khong co Mending?). Da tat nem binh XP.");
+            }
+        }
+    }
+
+    /** Sua xong: reset het trang thai dao de bot dao tiep ngay (truoc day bi dung im). */
+    private static void finishRepair(ClientPlayerEntity p) {
+        repairing = false;
+        repairSwapped = false;
+        repairEnding = false;
+        repairCooldown = 40;
+        pickSlot = -1;                       // chon lai cup chinh tu hotbar
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        rem.clear();
+        scanCd = 0;
+        lastPos = new Vec3d(p.getX(), p.getY(), p.getZ());
+        AutoMinerClient.msg("Xong sua cup, tiep tuc dao.");
+    }
+
+    // ===== Mua binh XP o /shop, vut do thua, sap xep hotbar =====
+    private static void goStage(int st) {
+        shopStage = st;
+        shopTimeout = 0;
+    }
+
+    private static String norm(String t) {
+        String n = java.text.Normalizer.normalize(t, java.text.Normalizer.Form.NFD).replaceAll("\\p{M}+", "");
+        return n.replace('\u0111', 'd').replace('\u0110', 'D').toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static int countXp(ClientPlayerEntity p) {
+        PlayerInventory inv = p.getInventory();
+        int n = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = inv.getStack(i);
+            if (st.isOf(Items.EXPERIENCE_BOTTLE)) n += st.getCount();
+        }
+        return n;
+    }
+
+    private static int invToSlotId(int i) {
+        return i < 9 ? 36 + i : i;      // hotbar 0..8 -> slot 36..44, kho 9..35 -> slot 9..35
+    }
+
+    private static boolean isScaffoldItem(ItemStack st) {
+        return st.isOf(Items.COBBLESTONE) || st.isOf(Items.COBBLED_DEEPSLATE)
+            || st.isOf(Items.NETHERRACK) || st.isOf(Items.DIRT);
+    }
+
+    /** Giu lai: cup, xeng, binh XP, do an, totem, block lap ho. Con lai la do thua. */
+    private static boolean keepItem(ItemStack st) {
+        return st.isIn(ItemTags.PICKAXES) || st.isIn(ItemTags.SHOVELS) || st.isOf(Items.EXPERIENCE_BOTTLE)
+            || isGoodFood(st) || st.isOf(Items.TOTEM_OF_UNDYING) || isScaffoldItem(st);
+    }
+
+    private static int findJunkSlot(ClientPlayerEntity p) {
+        PlayerInventory inv = p.getInventory();
+        for (int i = 0; i < 36; i++) {
+            ItemStack st = inv.getStack(i);
+            if (!st.isEmpty() && !keepItem(st)) return i;
+        }
+        return -1;
+    }
+
+    private static boolean roleFits(int role, ItemStack st) {
+        if (st.isEmpty()) return false;
+        switch (role) {
+            case 0: return st.isIn(ItemTags.PICKAXES) && isAreaPick(st);
+            case 1: return st.isIn(ItemTags.PICKAXES) && !isAreaPick(st);
+            case 2: return st.isIn(ItemTags.SHOVELS);
+            case 3: return isGoodFood(st);
+            case 4: return st.isOf(Items.EXPERIENCE_BOTTLE);
+            default: return isScaffoldItem(st);
+        }
+    }
+
+    /** Lam dung 1 buoc sap xep hotbar theo HOTBAR_LAYOUT. true = vua click 1 lan. */
+    private static boolean arrangeStep(ClientPlayerInteractionManager im, ClientPlayerEntity p) {
+        PlayerInventory inv = p.getInventory();
+        for (int k = 0; k < 9; k++) {
+            int role = HOTBAR_LAYOUT[k];
+            // da dat o cup thuong bang /am normal thi khong dong vao cac o cong cu (tranh lech o)
+            if (normalPickSlot >= 0 && (role <= 2 || k == normalPickSlot)) continue;
+            if (roleFits(role, inv.getStack(k))) continue;
+            int src = -1;
+            for (int i = 9; i < 36 && src < 0; i++) {
+                if (roleFits(role, inv.getStack(i))) src = i;
+            }
+            for (int j = k + 1; j < 9 && src < 0; j++) {
+                ItemStack sj = inv.getStack(j);
+                if (roleFits(role, sj) && !roleFits(HOTBAR_LAYOUT[j], sj)) src = j;
+            }
+            if (src < 0) continue;
+            im.clickSlot(p.playerScreenHandler.syncId, invToSlotId(src), k, SlotActionType.SWAP, p);
+            return true;
+        }
+        return false;
+    }
+
+    private static String screenTitle(MinecraftClient mc) {
+        return mc.currentScreen == null ? "" : mc.currentScreen.getTitle().getString();
+    }
+
+    private static ScreenHandler containerHandler(MinecraftClient mc, ClientPlayerEntity p) {
+        if (!(mc.currentScreen instanceof HandledScreen<?>)) return null;
+        ScreenHandler h = p.currentScreenHandler;
+        if (h == null || h == p.playerScreenHandler) return null;
+        return h;
+    }
+
+    private static int containerSize(ScreenHandler h) {
+        return Math.max(0, h.slots.size() - 36);
+    }
+
+    private static boolean containerLoaded(ScreenHandler h) {
+        int n = containerSize(h);
+        for (int i = 0; i < n; i++) {
+            if (!h.getSlot(i).getStack().isEmpty()) return true;
+        }
+        return false;
+    }
+
+    private static int findSlotByName(ScreenHandler h, String needle) {
+        int n = containerSize(h);
+        for (int i = 0; i < n; i++) {
+            ItemStack st = h.getSlot(i).getStack();
+            if (st.isEmpty()) continue;
+            if (norm(st.getName().getString()).contains(needle)) return i;
+        }
+        return -1;
+    }
+
+    /** Neu khong tim thay theo ten thi dung vi tri trong anh (GUI 3 hang): GEAR=13, binh XP=16, dat 64=17, xac nhan=23. */
+    private static int fallbackSlot(ScreenHandler h, int idx) {
+        return (containerSize(h) == 27 && idx < 27 && !h.getSlot(idx).getStack().isEmpty()) ? idx : -1;
+    }
+
+    /** Tra ve GUI moi (da doi cua so/tieu de va da co do) hoac null neu chua toi. */
+    private static ScreenHandler waitForScreen(MinecraftClient mc, ClientPlayerEntity p) {
+        ScreenHandler h = containerHandler(mc, p);
+        if (h == null || !containerLoaded(h)) return null;
+        boolean changed = h.syncId != shopSync || !screenTitle(mc).equals(shopTitle) || shopTimeout > 40;
+        return changed ? h : null;
+    }
+
+    private static void markScreen(MinecraftClient mc, ScreenHandler h) {
+        shopSync = h.syncId;
+        shopTitle = screenTitle(mc);
+    }
+
+    private static void startShop(MinecraftClient mc, ClientPlayerEntity p, ClientPlayerInteractionManager im, boolean buy) {
+        releaseMove(mc);
+        im.cancelBlockBreaking();
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        shopBought = 0;
+        shopRetry = 0;
+        shopDrops = 0;
+        shopArrangeSteps = 0;
+        shopWait = 0;
+        if (buy) {
+            goStage(dropJunk ? SH_DROP : SH_OPEN);
+            AutoMinerClient.msg("Het binh XP -> mua o /shop.");
+        } else {
+            goStage(SH_ARRANGE);
+            AutoMinerClient.msg("Binh XP dang o trong tui -> xep len hotbar.");
+        }
+    }
+
+    private static void endShop(MinecraftClient mc, ClientPlayerEntity p, String msg) {
+        if (mc.currentScreen != null) p.closeHandledScreen();
+        shopStage = SH_IDLE;
+        shopCooldown = 20 * 120;        // that bai -> 2 phut sau moi thu lai
+        AutoMinerClient.msg(msg);
+    }
+
+    private static void shopFail(MinecraftClient mc, ClientPlayerEntity p, String msg) {
+        if (shopBought > 0) {           // da mua duoc it nhat 1 lan -> van xep do roi dao tiep
+            if (mc.currentScreen != null) p.closeHandledScreen();
+            AutoMinerClient.msg(msg);
+            goStage(SH_ARRANGE);
+            shopWait = 10;
+            return;
+        }
+        endShop(mc, p, msg);
+    }
+
+    private static void finishShop(MinecraftClient mc, ClientPlayerEntity p) {
+        if (mc.currentScreen != null) p.closeHandledScreen();
+        shopStage = SH_IDLE;
+        shopCooldown = 100;
+        repairCooldown = 0;
+        pickSlot = -1;
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        rem.clear();
+        scanCd = 0;
+        lastPos = new Vec3d(p.getX(), p.getY(), p.getZ());
+        AutoMinerClient.msg("Xong: co " + countXp(p) + " binh XP, tiep tuc.");
+    }
+
+    private static void doShop(MinecraftClient mc, ClientPlayerEntity p, ClientPlayerInteractionManager im) {
+        releaseMove(mc);
+        im.cancelBlockBreaking();
+        if (shopWait > 0) {
+            shopWait--;
+            return;
+        }
+        shopTimeout++;
+
+        // 1. Vut do thua (nem ra xa phia truoc de khong nhat lai)
+        if (shopStage == SH_DROP) {
+            if (!(mc.currentScreen instanceof InventoryScreen)) {
+                p.setPitch(-15f);
+                mc.setScreen(new InventoryScreen(p));
+                shopWait = 4;
+                return;
+            }
+            int slot = findJunkSlot(p);
+            if (slot < 0 || shopDrops >= 80) {
+                p.closeHandledScreen();
+                goStage(SH_OPEN);
+                shopWait = 8;
+                return;
+            }
+            im.clickSlot(p.playerScreenHandler.syncId, invToSlotId(slot), 1, SlotActionType.THROW, p);
+            shopDrops++;
+            shopWait = 3;
+            return;
+        }
+
+        // 2. /shop
+        if (shopStage == SH_OPEN) {
+            if (mc.getNetworkHandler() == null) return;
+            if (shopRetry++ >= 3) {
+                shopFail(mc, p, "Khong mo duoc /shop.");
+                return;
+            }
+            shopSync = -1;
+            shopTitle = "";
+            mc.getNetworkHandler().sendChatCommand("shop");
+            goStage(SH_MAIN);
+            shopWait = 10;
+            return;
+        }
+
+        // 3. Bam GEAR
+        if (shopStage == SH_MAIN) {
+            ScreenHandler h = waitForScreen(mc, p);
+            if (h != null) {
+                int g = findSlotByName(h, "gear");
+                if (g < 0) g = fallbackSlot(h, 13);
+                if (g < 0) {
+                    shopFail(mc, p, "Khong thay muc GEAR trong /shop.");
+                    return;
+                }
+                markScreen(mc, h);
+                im.clickSlot(h.syncId, g, 0, SlotActionType.PICKUP, p);
+                goStage(SH_GEAR);
+                shopWait = 6;
+            } else if (shopTimeout > 100) {
+                if (mc.currentScreen != null) p.closeHandledScreen();
+                goStage(SH_OPEN);
+            }
+            return;
+        }
+
+        // 4. Bam "Chai kinh nghiem"
+        if (shopStage == SH_GEAR) {
+            ScreenHandler h = waitForScreen(mc, p);
+            if (h != null) {
+                int g = findSlotByName(h, "chai kinh nghiem");
+                if (g < 0) g = fallbackSlot(h, 16);
+                if (g < 0) {
+                    shopFail(mc, p, "Khong thay Chai kinh nghiem trong shop GEAR.");
+                    return;
+                }
+                markScreen(mc, h);
+                im.clickSlot(h.syncId, g, 0, SlotActionType.PICKUP, p);
+                goStage(SH_ITEM);
+                shopWait = 6;
+            } else if (shopTimeout > 120) {
+                shopFail(mc, p, "Shop GEAR khong mo.");
+            }
+            return;
+        }
+
+        // 5. Man "Mua Chai kinh nghiem": bam "dat thanh 64"
+        if (shopStage == SH_ITEM) {
+            ScreenHandler h = waitForScreen(mc, p);
+            if (h != null) {
+                int g = findSlotByName(h, "dat thanh 64");
+                if (g < 0) g = fallbackSlot(h, 17);
+                if (g < 0) {
+                    shopFail(mc, p, "Khong thay nut 'dat thanh 64'.");
+                    return;
+                }
+                im.clickSlot(h.syncId, g, 0, SlotActionType.PICKUP, p);
+                goStage(SH_CONFIRM);
+                shopWait = 8;
+            } else if (shopTimeout > 120) {
+                shopFail(mc, p, "Man mua binh XP khong mo.");
+            }
+            return;
+        }
+
+        // 6. Bam "xac nhan"
+        if (shopStage == SH_CONFIRM) {
+            ScreenHandler h = containerHandler(mc, p);
+            if (h != null && containerLoaded(h)) {
+                int g = findSlotByName(h, "xac nhan");
+                if (g < 0) g = fallbackSlot(h, 23);
+                if (g < 0) {
+                    shopFail(mc, p, "Khong thay nut xac nhan.");
+                    return;
+                }
+                shopXpBefore = countXp(p);
+                im.clickSlot(h.syncId, g, 0, SlotActionType.PICKUP, p);
+                goStage(SH_VERIFY);
+                shopWait = 10;
+            } else if (shopTimeout > 60) {
+                shopFail(mc, p, "Man mua binh XP bi dong.");
+            }
+            return;
+        }
+
+        // 7. Kiem tra da mua duoc chua
+        if (shopStage == SH_VERIFY) {
+            if (countXp(p) > shopXpBefore) {
+                shopBought++;
+                AutoMinerClient.msg("Da mua 64 binh XP (" + shopBought + "/" + xpBuyStacks + ").");
+                goStage(SH_CLOSE);
+            } else if (shopTimeout > 60) {
+                shopFail(mc, p, "Mua khong duoc (het tien hoac day tui?).");
+            }
+            return;
+        }
+
+        if (shopStage == SH_CLOSE) {
+            if (mc.currentScreen != null) p.closeHandledScreen();
+            shopWait = 20;
+            if (shopBought < xpBuyStacks) {
+                shopRetry = 0;
+                goStage(SH_OPEN);
+            } else {
+                goStage(SH_ARRANGE);
+            }
+            return;
+        }
+
+        // 8. Sap xep hotbar nhu anh
+        if (shopStage == SH_ARRANGE) {
+            if (!(mc.currentScreen instanceof InventoryScreen)) {
+                mc.setScreen(new InventoryScreen(p));
+                shopWait = 4;
+                return;
+            }
+            if (shopArrangeSteps++ < 40 && arrangeStep(im, p)) {
+                shopWait = 3;
+                return;
+            }
+            finishShop(mc, p);
         }
     }
 
