@@ -78,6 +78,8 @@ public final class MinerLogic {
     private static int stillTicks = 0;
     private static int hudTick = 0;
     private static int holeTicks = 0;
+    private static int escCount = 0;
+    private static long escWindowStart = 0;
 
     private static boolean eating = false;
     private static int eatTicks = 0, eatCooldown = 0;
@@ -114,6 +116,8 @@ public final class MinerLogic {
         repairing = false;
         repairCooldown = 0;
         noXpWarned = false;
+        escCount = 0;
+        escWindowStart = 0;
         eating = false;
         escaping = false;
         escCooldown = 0;
@@ -251,6 +255,7 @@ public final class MinerLogic {
         if (!escaping && escCooldown == 0 && !descending && p.isOnGround()
             && p.getBlockPos().getY() <= groupBottom - 2) {
             startEscape(mc, p);
+            if (!enabled) return;
         }
 
         // 4. Scaffold (chi khi dang dao ngang)
@@ -474,6 +479,17 @@ public final class MinerLogic {
 
     // ===== Roi xuong ho: doi cup thuong, dao bac thang cheo len =====
     private static void startEscape(MinecraftClient mc, ClientPlayerEntity p) {
+        // Chong vong lap: roi ho -> len -> lai roi cung cho. 4 lan trong 2 phut thi dung han va bao toa do.
+        long now = System.currentTimeMillis();
+        if (now - escWindowStart > 120_000L) {
+            escWindowStart = now;
+            escCount = 0;
+        }
+        if (++escCount > 3) {
+            disable(mc, "Roi xuong ho 4 lan trong 2 phut tai " + p.getBlockPos().toShortString()
+                + " (tang dao Y=" + groupBottom + "). San dang bi thung sau -> lap ho (hoac de block trong hotbar + bat Scaffold) roi chay lai.");
+            return;
+        }
         escaping = true;
         escTries = 0;
         escAir = 0;
@@ -489,7 +505,7 @@ public final class MinerLogic {
             ? (dx >= 0 ? Direction.EAST : Direction.WEST)
             : (dz >= 0 ? Direction.SOUTH : Direction.NORTH);
         AutoMinerClient.msg(escSlot >= 0
-            ? "Roi xuong ho! Doi sang cup thuong de dao bac thang len."
+            ? "Roi xuong ho tai " + p.getBlockPos().toShortString() + " (tang Y=" + groupBottom + ")! Doi sang cup thuong de dao bac thang len."
             : "Roi xuong ho! Chua biet cup thuong nao (cam cup thuong roi go /am normal), tam dung cup hien tai.");
     }
 
