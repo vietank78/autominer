@@ -761,10 +761,28 @@ public final class MinerLogic {
         if (!w.getBlockState(ahead).isAir()) { holeTicks = 0; return false; }   // dang co block -> bot se dao, khong di
         BlockPos floor = ahead.down();
         boolean hole = w.getBlockState(floor).isAir() || w.getFluidState(floor).isIn(FluidTags.LAVA);
-        if (!hole) { holeTicks = 0; return false; }
+        if (!hole) { holeTicks = 0; mc.options.sneakKey.setPressed(false); return false; }
         releaseMove(mc);
         im.cancelBlockBreaking();
-        if (autoScaffold && placeAt(p, w, im, floor)) return true;
+        if (!autoScaffold) {
+            if (++holeTicks > 60) disable(mc, "Truoc mat la ho! Da dung.");
+            return true;
+        }
+
+        // NGOI (Shift) nhich ra sat mep roi nhoai nguoi ra de nhin vao mat ben cua block dang dung,
+        // nhu khi bridge: mat phai o ngoai mat phang mep thi moi dat duoc block.
+        mc.options.sneakKey.setPressed(true);
+        boolean axisX = d.getAxis() == Direction.Axis.X;
+        int sign = axisX ? d.getOffsetX() : d.getOffsetZ();
+        double edge = axisX ? (sign > 0 ? ahead.getX() : ahead.getX() + 1) : (sign > 0 ? ahead.getZ() : ahead.getZ() + 1);
+        double over = ((axisX ? p.getX() : p.getZ()) - edge) * sign;     // >0: da nhoai qua mep
+        if (over < 0.15) {
+            p.setYaw((float) (Math.toDegrees(Math.atan2(d.getOffsetZ(), d.getOffsetX())) - 90.0));
+            mc.options.forwardKey.setPressed(true);                      // ngoi nen di rat cham, khong rot
+            if (++holeTicks > 200) disable(mc, "Khong nhich ra mep ho duoc, da dung.");
+            return true;
+        }
+        if (placeAt(p, w, im, floor)) return true;
         if (++holeTicks > 60) disable(mc, "Truoc mat la ho va khong co block de lap! Da dung.");
         return true;
     }
@@ -898,6 +916,7 @@ public final class MinerLogic {
     private static void releaseMove(MinecraftClient mc) {
         mc.options.forwardKey.setPressed(false);
         mc.options.jumpKey.setPressed(false);
+        mc.options.sneakKey.setPressed(false);
     }
 
     // ===== Lava =====
@@ -930,6 +949,10 @@ public final class MinerLogic {
             Vec3d hitVec = Vec3d.ofCenter(support).add(
                 face.getOffsetX() * 0.5, face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5);
             if (eye.squaredDistanceTo(hitVec) > REACH_SQ) continue;
+            // mat bi click phai huong ve phia mat nguoi choi (mat o sau block thi server tu choi)
+            Vec3d off = eye.subtract(Vec3d.ofCenter(support));
+            double front = off.x * face.getOffsetX() + off.y * face.getOffsetY() + off.z * face.getOffsetZ();
+            if (front < 0.5) continue;
 
             aim(p, hitVec);
             if (!placeAimed) {            // quay dau truoc, doi server nhan huong nhin roi moi dat
