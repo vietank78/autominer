@@ -12,6 +12,7 @@ import net.minecraft.client.world.ClientWorld;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.LoreComponent;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -36,7 +37,7 @@ import java.util.Set;
 public final class MinerLogic {
     // ===== Cai dat =====
     public static boolean enabled = false;
-    public static boolean useFixCommand = false;
+    public static boolean useXpBottle = true;     // tu nem binh XP de Mending sua cup
     public static boolean autoEat = true;
     public static boolean autoScaffold = true;
     public static boolean lavaSafety = true;
@@ -79,7 +80,12 @@ public final class MinerLogic {
     private static int holeTicks = 0;
 
     private static boolean eating = false;
-    private static int eatTicks = 0, eatCooldown = 0, fixCooldown = 0;
+    private static int eatTicks = 0, eatCooldown = 0;
+
+    // ===== Sua cup bang binh XP (Mending: cup phai nam o tay phu) =====
+    private static final float REPAIR_TARGET = 98f;
+    private static boolean repairing = false, repairSwapped = false, repairEnding = false, noXpWarned = false;
+    private static int repairTicks = 0, repairWait = 0, repairSwapTries = 0, repairBackTries = 0, repairCooldown = 0;
 
     private MinerLogic() {}
 
@@ -105,6 +111,9 @@ public final class MinerLogic {
         scanCd = 0;
         stillTicks = 0;
         holeTicks = 0;
+        repairing = false;
+        repairCooldown = 0;
+        noXpWarned = false;
         eating = false;
         escaping = false;
         escCooldown = 0;
@@ -171,6 +180,11 @@ public final class MinerLogic {
     }
 
     private static void disable(MinecraftClient mc, String reason) {
+        if (repairing && repairSwapped && mc.player != null) {   // tra cup ve tay chinh
+            mc.player.getInventory().setSelectedSlot(pickSlot);
+            sendSwapOffhand(mc);
+        }
+        repairing = false;
         enabled = false;
         escaping = false;
         if (eating) stopEating(mc);
@@ -196,7 +210,11 @@ public final class MinerLogic {
         ClientPlayerInteractionManager im = mc.interactionManager;
         if (!enabled || p == null || w == null || im == null) return;
 
-        if (fixCooldown > 0) fixCooldown--;
+        if (repairCooldown > 0) repairCooldown--;
+        if (repairing) {            // dang nem binh XP: dung moi viec khac
+            doRepair(mc, p, im);
+            return;
+        }
         if (eatCooldown > 0) eatCooldown--;
         if (escCooldown > 0) escCooldown--;
 
@@ -213,12 +231,12 @@ public final class MinerLogic {
         }
         ItemStack pick = inv.getStack(pickSlot);
         if (durabilityPercent(pick) < DURABILITY_THRESHOLD) {
-            if (useFixCommand && fixCooldown == 0 && mc.getNetworkHandler() != null) {
-                mc.getNetworkHandler().sendChatCommand("fix");
-                fixCooldown = 20 * 30;
+            if (useXpBottle && repairCooldown == 0 && findXpSlot(p) >= 0) {
+                startRepair(mc, p, im);
+                return;
             }
             if (pick.isDamageable() && pick.getMaxDamage() - pick.getDamage() <= 2) {
-                disable(mc, "Cuc sap hong! Da dung.");
+                disable(mc, "Cuc sap hong va het binh XP! Da dung.");
                 return;
             }
         }
@@ -729,6 +747,112 @@ public final class MinerLogic {
         if (autoScaffold && placeAt(p, w, im, floor)) return true;
         if (++holeTicks > 60) disable(mc, "Truoc mat la ho va khong co block de lap! Da dung.");
         return true;
+    }
+
+    // ===== Sua cup bang binh XP =====
+    private static int findXpSlot(ClientPlayerEntity p) {
+        PlayerInventory inv = p.getInventory();
+        for (int i = 0; i < 9; i++) {
+            if (inv.getStack(i).isOf(Items.EXPERIENCE_BOTTLE)) return i;
+        }
+        return -1;
+    }
+
+    private static void sendSwapOffhand(MinecraftClient mc) {
+        if (mc.getNetworkHandler() == null) return;
+        mc.getNetworkHandler().sendPacket(new PlayerActionC2SPacket(
+            PlayerActionC2SPacket.Action.SWAP_ITEMS_WITH_OFFHAND, BlockPos.ORIGIN, Direction.DOWN));
+    }
+
+    private static void startRepair(MinecraftClient mc, ClientPlayerEntity p, ClientPlayerInteractionManager im) {
+        repairing = true;
+        repairSwapped = false;
+        repairEnding = false;
+        repairTicks = 0;
+        repairSwapTries = 0;
+        repairBackTries = 0;
+        repairWait = 3;
+        releaseMove(mc);
+        im.cancelBlockBreaking();
+        currentTarget = null;
+        mineTicks = 0;
+        stillTicks = 0;
+        p.getInventory().setSelectedSlot(pickSlot);
+        AutoMinerClient.msg("Cuc yeu -> nem binh XP de sua (Mending).");
+    }
+
+    private static void doRepair(MinecraftClient mc, ClientPlayerEntity p, ClientPlayerInteractionManager im) {
+        PlayerInventory inv = p.getInventory();
+        releaseMove(mc);
+        im.cancelBlockBreaking();
+        if (++repairTicks > 20 * 120) repairEnding = true;   // qua lau -> thoi
+        if (repairWait > 0) {
+            repairWait--;
+            return;
+        }
+
+        // 1. Chuyen cup sang tay phu (Mending chi sua do dang cam / tay phu / giap)
+        if (!repairSwapped && !repairEnding) {
+            if (p.getOffHandStack().isIn(ItemTags.PICKAXES)) {
+                repairSwapped = true;
+            } else if (repairSwapTries < 3) {
+                inv.setSelectedSlot(pickSlot);
+                sendSwapOffhand(mc);
+                repairSwapTries++;
+                repairWait = 6;
+                return;
+            } else {
+                repairing = false;
+                repairCooldown = 20 * 30;
+                AutoMinerClient.msg("Khong chuyen duoc cup sang tay phu, bo qua sua cup.");
+                return;
+            }
+        }
+
+        // 2. Ket thuc: tra cup ve o hotbar cu
+        if (repairEnding) {
+            if (!repairSwapped || inv.getStack(pickSlot).isIn(ItemTags.PICKAXES)) {
+                repairing = false;
+                repairSwapped = false;
+                repairCooldown = 40;
+                inv.setSelectedSlot(pickSlot);
+                AutoMinerClient.msg("Xong sua cup, tiep tuc dao.");
+                return;
+            }
+            if (repairBackTries++ > 4) {
+                disable(mc, "Khong tra duoc cup ve tay chinh, da dung.");
+                return;
+            }
+            inv.setSelectedSlot(pickSlot);
+            sendSwapOffhand(mc);
+            repairWait = 6;
+            return;
+        }
+
+        // 3. Nem binh XP xuong chan cho toi khi cup day
+        if (durabilityPercent(p.getOffHandStack()) >= REPAIR_TARGET) {
+            repairEnding = true;
+            return;
+        }
+        int xs = findXpSlot(p);
+        if (xs < 0) {
+            if (!noXpWarned) {
+                noXpWarned = true;
+                AutoMinerClient.msg("Het binh XP trong hotbar!");
+            }
+            repairEnding = true;
+            return;
+        }
+        if (inv.getSelectedSlot() != xs) {
+            inv.setSelectedSlot(xs);
+            repairWait = 2;
+            return;
+        }
+        p.setPitch(90f);
+        if (repairTicks % 3 == 0) {
+            im.interactItem(p, Hand.MAIN_HAND);
+            p.swingHand(Hand.MAIN_HAND);
+        }
     }
 
     private static void hud(ClientPlayerEntity p) {

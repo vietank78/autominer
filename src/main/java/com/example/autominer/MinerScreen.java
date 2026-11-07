@@ -44,7 +44,7 @@ public class MinerScreen extends Screen {
         y += gap;
 
         toggleButton(x1, y, cw, "An toàn lava", () -> MinerLogic.lavaSafety, v -> MinerLogic.lavaSafety = v);
-        toggleButton(x2, y, cw, "Lệnh /fix", () -> MinerLogic.useFixCommand, v -> MinerLogic.useFixCommand = v);
+        toggleButton(x2, y, cw, "Ném bình XP", () -> MinerLogic.useXpBottle, v -> MinerLogic.useXpBottle = v);
         y += gap;
 
         toggleButton(x1, y, cw, "Bot tự đi", () -> MinerLogic.botMove, v -> MinerLogic.botMove = v);

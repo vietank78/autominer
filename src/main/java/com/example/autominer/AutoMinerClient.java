@@ -70,10 +70,10 @@ public class AutoMinerClient implements ClientModInitializer {
                     msg("Da xoa vung chon -> dung che do 3x3 truoc mat.");
                     return 1;
                 }))
-                .then(ClientCommandManager.literal("fix")
+                .then(ClientCommandManager.literal("xp")
                     .then(ClientCommandManager.argument("on", BoolArgumentType.bool()).executes(ctx -> {
-                        MinerLogic.useFixCommand = BoolArgumentType.getBool(ctx, "on");
-                        msg("Dung lenh /fix: " + MinerLogic.useFixCommand);
+                        MinerLogic.useXpBottle = BoolArgumentType.getBool(ctx, "on");
+                        msg("Nem binh XP sua cup: " + MinerLogic.useXpBottle);
                         return 1;
                     })))
                 .then(ClientCommandManager.literal("bot")
@@ -103,7 +103,7 @@ public class AutoMinerClient implements ClientModInitializer {
                         + " | pos1: " + MinerLogic.pos1
                         + " | pos2: " + MinerLogic.pos2
                         + " | cup thuong: " + (MinerLogic.normalPickSlot >= 0 ? "o " + (MinerLogic.normalPickSlot + 1) : "tu nhan dang")
-                        + " | /fix: " + MinerLogic.useFixCommand
+                        + " | binh XP: " + MinerLogic.useXpBottle
                         + " | bot: " + MinerLogic.botMove
                         + " | tang: " + MinerLogic.layerHeight);
                     return 1;
