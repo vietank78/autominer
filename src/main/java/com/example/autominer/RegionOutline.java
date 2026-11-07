@@ -20,13 +20,15 @@ public final class RegionOutline {
         if (w == null || mc.player == null) return;
         if (++counter % 4 != 0) return;
 
+        Vec3d me = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+
         BlockPos a = MinerLogic.pos1, b = MinerLogic.pos2;
-        if (a != null && b == null) box(w, mc.player.getPos(), a, a, YELLOW);
-        else if (a == null && b != null) box(w, mc.player.getPos(), b, b, YELLOW);
-        else if (a != null) box(w, mc.player.getPos(), a, b, RED);
+        if (a != null && b == null) box(w, me, a, a, YELLOW);
+        else if (a == null && b != null) box(w, me, b, b, YELLOW);
+        else if (a != null) box(w, me, a, b, RED);
 
         BlockPos[] g = MinerLogic.activeBox();
-        if (g != null) box(w, mc.player.getPos(), g[0], g[1], GREEN);
+        if (g != null) box(w, me, g[0], g[1], GREEN);
     }
 
     private static void box(ClientWorld w, Vec3d me, BlockPos p, BlockPos q, DustParticleEffect fx) {

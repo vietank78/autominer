@@ -96,7 +96,7 @@ public final class MinerLogic {
         scanCd = 0;
         stillTicks = 0;
         eating = false;
-        lastPos = mc.player.getPos();
+        lastPos = new Vec3d(mc.player.getX(), mc.player.getY(), mc.player.getZ());
         enabled = true;
         AutoMinerClient.msg("Da BAT: " + (straight ? "ham thang 3x3 (dai " + STRAIGHT_LEN + ")"
             : "vung chon, moi dot " + groupH + " tang") + (botMove ? ", bot tu di." : "."));
@@ -330,7 +330,7 @@ public final class MinerLogic {
         double tz = alongX ? lc : near.getZ() + 0.5;
         walkTo(mc, p, tx, tz);
 
-        Vec3d pos = p.getPos();
+        Vec3d pos = new Vec3d(p.getX(), p.getY(), p.getZ());
         if (pos.squaredDistanceTo(lastPos) < 0.0004) stillTicks++;
         else stillTicks = 0;
         lastPos = pos;
