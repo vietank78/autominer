@@ -1,6 +1,7 @@
 package com.example.autominer;
 
 import com.mojang.brigadier.arguments.BoolArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -39,6 +40,7 @@ public class AutoMinerClient implements ClientModInitializer {
             }
             while (toggleKey.wasPressed()) MinerLogic.toggle(client);
             MinerLogic.tick(client);
+            RegionOutline.tick(client);
         });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
@@ -73,11 +75,25 @@ public class AutoMinerClient implements ClientModInitializer {
                         msg("Dung lenh /fix: " + MinerLogic.useFixCommand);
                         return 1;
                     })))
+                .then(ClientCommandManager.literal("bot")
+                    .then(ClientCommandManager.argument("on", BoolArgumentType.bool()).executes(ctx -> {
+                        MinerLogic.botMove = BoolArgumentType.getBool(ctx, "on");
+                        msg("Bot tu di: " + MinerLogic.botMove);
+                        return 1;
+                    })))
+                .then(ClientCommandManager.literal("layer")
+                    .then(ClientCommandManager.argument("n", IntegerArgumentType.integer(1, 3)).executes(ctx -> {
+                        MinerLogic.layerHeight = IntegerArgumentType.getInteger(ctx, "n");
+                        msg("Dao moi dot " + MinerLogic.layerHeight + " tang.");
+                        return 1;
+                    })))
                 .then(ClientCommandManager.literal("status").executes(ctx -> {
                     msg("Bat: " + MinerLogic.enabled
                         + " | pos1: " + MinerLogic.pos1
                         + " | pos2: " + MinerLogic.pos2
-                        + " | /fix: " + MinerLogic.useFixCommand);
+                        + " | /fix: " + MinerLogic.useFixCommand
+                        + " | bot: " + MinerLogic.botMove
+                        + " | tang: " + MinerLogic.layerHeight);
                     return 1;
                 }))
             ));
@@ -97,4 +113,4 @@ public class AutoMinerClient implements ClientModInitializer {
             mc.player.sendMessage(Text.literal("[AutoMiner] " + s), false);
         }
     }
-          }
+}
