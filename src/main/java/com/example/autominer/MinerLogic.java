@@ -79,6 +79,9 @@ public final class MinerLogic {
     private static int hudTick = 0;
     private static int holeTicks = 0;
     private static int escCount = 0;
+    private static int placeCd = 0;
+    private static boolean placeAimed = false;
+    private static final int PLACE_DELAY = 6;   // tick giua 2 lan dat block (6 tick = 0.3s)
     private static long escWindowStart = 0;
 
     private static boolean eating = false;
@@ -215,6 +218,7 @@ public final class MinerLogic {
         if (!enabled || p == null || w == null || im == null) return;
 
         if (repairCooldown > 0) repairCooldown--;
+        if (placeCd > 0) placeCd--;
         if (repairing) {            // dang nem binh XP: dung moi viec khac
             doRepair(mc, p, im);
             return;
@@ -911,6 +915,12 @@ public final class MinerLogic {
                                    ClientPlayerInteractionManager im, BlockPos target) {
         int slot = findBlockSlot(p, w);
         if (slot < 0) return false;
+        if (placeCd > 0) return true;                 // dang cho giua 2 lan dat -> dung yen, doi
+        if (p.getInventory().getSelectedSlot() != slot) {
+            p.getInventory().setSelectedSlot(slot);   // doi o hotbar truoc, doi server nhan roi moi dat
+            placeCd = 3;
+            return true;
+        }
         Vec3d eye = p.getEyePos();
         for (Direction d : Direction.values()) {
             BlockPos support = target.offset(d);
@@ -921,11 +931,17 @@ public final class MinerLogic {
                 face.getOffsetX() * 0.5, face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5);
             if (eye.squaredDistanceTo(hitVec) > REACH_SQ) continue;
 
-            p.getInventory().setSelectedSlot(slot);
             aim(p, hitVec);
+            if (!placeAimed) {            // quay dau truoc, doi server nhan huong nhin roi moi dat
+                placeAimed = true;
+                placeCd = 2;
+                return true;
+            }
+            placeAimed = false;
             BlockHitResult hit = new BlockHitResult(hitVec, face, support, false);
             ActionResult r = im.interactBlock(p, Hand.MAIN_HAND, hit);
             if (r.isAccepted()) p.swingHand(Hand.MAIN_HAND);
+            placeCd = PLACE_DELAY;
             return true;
         }
         return false;
